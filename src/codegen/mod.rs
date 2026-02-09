@@ -4,13 +4,23 @@ use crate::CompileError;
 use crate::parser::{BinaryOperator, Expression, Program, Statement, UnaryOperator};
 
 struct Context {
-    variables: HashMap<String, i64>,
+    scopes: Vec<HashMap<String, i64>>,
     stack_offset: i64,
+    label_counter: usize,
 }
 
 impl Context {
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
     fn declare(&mut self, name: &str) -> Result<i64, CompileError> {
-        if self.variables.contains_key(name) {
+        let scope = self.scopes.last_mut().unwrap();
+        if scope.contains_key(name) {
             return Err(CompileError {
                 message: format!("variable already declared: {name}"),
                 line: 0,
@@ -18,20 +28,31 @@ impl Context {
             });
         }
         self.stack_offset += 4;
-        self.variables.insert(name.to_string(), self.stack_offset);
+        scope.insert(name.to_string(), self.stack_offset);
         Ok(self.stack_offset)
     }
 
     fn lookup(&self, name: &str) -> Result<i64, CompileError> {
-        self.variables.get(name).copied().ok_or_else(|| CompileError {
+        for scope in self.scopes.iter().rev() {
+            if let Some(&offset) = scope.get(name) {
+                return Ok(offset);
+            }
+        }
+        Err(CompileError {
             message: format!("undefined variable: {name}"),
             line: 0,
             col: 0,
         })
     }
+
+    fn next_label(&mut self) -> String {
+        let label = format!(".L{}", self.label_counter);
+        self.label_counter += 1;
+        label
+    }
 }
 
-fn generate_expression(ctx: &Context, expr: &Expression) -> Result<Vec<String>, CompileError> {
+fn generate_expression(ctx: &mut Context, expr: &Expression) -> Result<Vec<String>, CompileError> {
     match expr {
         Expression::IntLiteral(value) => {
             Ok(vec![format!("    movl ${value}, %eax")])
@@ -64,31 +85,100 @@ fn generate_expression(ctx: &Context, expr: &Expression) -> Result<Vec<String>, 
             Ok(instructions)
         }
         Expression::BinaryOp { operator, left, right } => {
-            let mut instructions = generate_expression(ctx, left)?;
-            instructions.push("    pushq %rax".to_string());
-            instructions.extend(generate_expression(ctx, right)?);
-            instructions.push("    movl %eax, %ecx".to_string());
-            instructions.push("    popq %rax".to_string());
             match operator {
-                BinaryOperator::Add => {
-                    instructions.push("    addl %ecx, %eax".to_string());
+                BinaryOperator::LogicalAnd => {
+                    let false_label = ctx.next_label();
+                    let end_label = ctx.next_label();
+                    let mut instructions = generate_expression(ctx, left)?;
+                    instructions.push("    cmpl $0, %eax".to_string());
+                    instructions.push(format!("    je {false_label}"));
+                    instructions.extend(generate_expression(ctx, right)?);
+                    instructions.push("    cmpl $0, %eax".to_string());
+                    instructions.push(format!("    je {false_label}"));
+                    instructions.push("    movl $1, %eax".to_string());
+                    instructions.push(format!("    jmp {end_label}"));
+                    instructions.push(format!("{false_label}:"));
+                    instructions.push("    movl $0, %eax".to_string());
+                    instructions.push(format!("{end_label}:"));
+                    Ok(instructions)
                 }
-                BinaryOperator::Subtract => {
-                    instructions.push("    subl %ecx, %eax".to_string());
+                BinaryOperator::LogicalOr => {
+                    let true_label = ctx.next_label();
+                    let end_label = ctx.next_label();
+                    let mut instructions = generate_expression(ctx, left)?;
+                    instructions.push("    cmpl $0, %eax".to_string());
+                    instructions.push(format!("    jne {true_label}"));
+                    instructions.extend(generate_expression(ctx, right)?);
+                    instructions.push("    cmpl $0, %eax".to_string());
+                    instructions.push(format!("    jne {true_label}"));
+                    instructions.push("    movl $0, %eax".to_string());
+                    instructions.push(format!("    jmp {end_label}"));
+                    instructions.push(format!("{true_label}:"));
+                    instructions.push("    movl $1, %eax".to_string());
+                    instructions.push(format!("{end_label}:"));
+                    Ok(instructions)
                 }
-                BinaryOperator::Multiply => {
-                    instructions.push("    imull %ecx, %eax".to_string());
-                }
-                BinaryOperator::Divide => {
-                    instructions.push("    cdq".to_string());
-                    instructions.push("    idivl %ecx".to_string());
-                }
-                BinaryOperator::Modulo => {
-                    instructions.push("    cdq".to_string());
-                    instructions.push("    idivl %ecx".to_string());
-                    instructions.push("    movl %edx, %eax".to_string());
+                _ => {
+                    let mut instructions = generate_expression(ctx, left)?;
+                    instructions.push("    pushq %rax".to_string());
+                    instructions.extend(generate_expression(ctx, right)?);
+                    instructions.push("    movl %eax, %ecx".to_string());
+                    instructions.push("    popq %rax".to_string());
+                    match operator {
+                        BinaryOperator::Add => {
+                            instructions.push("    addl %ecx, %eax".to_string());
+                        }
+                        BinaryOperator::Subtract => {
+                            instructions.push("    subl %ecx, %eax".to_string());
+                        }
+                        BinaryOperator::Multiply => {
+                            instructions.push("    imull %ecx, %eax".to_string());
+                        }
+                        BinaryOperator::Divide => {
+                            instructions.push("    cdq".to_string());
+                            instructions.push("    idivl %ecx".to_string());
+                        }
+                        BinaryOperator::Modulo => {
+                            instructions.push("    cdq".to_string());
+                            instructions.push("    idivl %ecx".to_string());
+                            instructions.push("    movl %edx, %eax".to_string());
+                        }
+                        BinaryOperator::Equal
+                        | BinaryOperator::NotEqual
+                        | BinaryOperator::LessThan
+                        | BinaryOperator::GreaterThan
+                        | BinaryOperator::LessEqual
+                        | BinaryOperator::GreaterEqual => {
+                            instructions.push("    cmpl %ecx, %eax".to_string());
+                            let set_instr = match operator {
+                                BinaryOperator::Equal => "sete",
+                                BinaryOperator::NotEqual => "setne",
+                                BinaryOperator::LessThan => "setl",
+                                BinaryOperator::GreaterThan => "setg",
+                                BinaryOperator::LessEqual => "setle",
+                                BinaryOperator::GreaterEqual => "setge",
+                                _ => unreachable!(),
+                            };
+                            instructions.push(format!("    {set_instr} %al"));
+                            instructions.push("    movzbl %al, %eax".to_string());
+                        }
+                        BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr => unreachable!(),
+                    }
+                    Ok(instructions)
                 }
             }
+        }
+        Expression::Ternary { condition, then_expr, else_expr } => {
+            let else_label = ctx.next_label();
+            let end_label = ctx.next_label();
+            let mut instructions = generate_expression(ctx, condition)?;
+            instructions.push("    cmpl $0, %eax".to_string());
+            instructions.push(format!("    je {else_label}"));
+            instructions.extend(generate_expression(ctx, then_expr)?);
+            instructions.push(format!("    jmp {end_label}"));
+            instructions.push(format!("{else_label}:"));
+            instructions.extend(generate_expression(ctx, else_expr)?);
+            instructions.push(format!("{end_label}:"));
             Ok(instructions)
         }
     }
@@ -114,14 +204,110 @@ fn generate_statement(ctx: &mut Context, stmt: &Statement) -> Result<Vec<String>
             }
         }
         Statement::Expression(expr) => generate_expression(ctx, expr),
+        Statement::Compound(stmts) => {
+            ctx.push_scope();
+            let mut instructions = Vec::new();
+            for stmt in stmts {
+                instructions.extend(generate_statement(ctx, stmt)?);
+            }
+            ctx.pop_scope();
+            Ok(instructions)
+        }
+        Statement::If { condition, then_branch, else_branch } => {
+            let mut instructions = generate_expression(ctx, condition)?;
+            instructions.push("    cmpl $0, %eax".to_string());
+            if let Some(else_branch) = else_branch {
+                let else_label = ctx.next_label();
+                let end_label = ctx.next_label();
+                instructions.push(format!("    je {else_label}"));
+                instructions.extend(generate_statement(ctx, then_branch)?);
+                instructions.push(format!("    jmp {end_label}"));
+                instructions.push(format!("{else_label}:"));
+                instructions.extend(generate_statement(ctx, else_branch)?);
+                instructions.push(format!("{end_label}:"));
+            } else {
+                let end_label = ctx.next_label();
+                instructions.push(format!("    je {end_label}"));
+                instructions.extend(generate_statement(ctx, then_branch)?);
+                instructions.push(format!("{end_label}:"));
+            }
+            Ok(instructions)
+        }
+        Statement::While { condition, body } => {
+            let start_label = ctx.next_label();
+            let end_label = ctx.next_label();
+            let mut instructions = vec![format!("{start_label}:")];
+            instructions.extend(generate_expression(ctx, condition)?);
+            instructions.push("    cmpl $0, %eax".to_string());
+            instructions.push(format!("    je {end_label}"));
+            instructions.extend(generate_statement(ctx, body)?);
+            instructions.push(format!("    jmp {start_label}"));
+            instructions.push(format!("{end_label}:"));
+            Ok(instructions)
+        }
+        Statement::DoWhile { body, condition } => {
+            let start_label = ctx.next_label();
+            let mut instructions = vec![format!("{start_label}:")];
+            instructions.extend(generate_statement(ctx, body)?);
+            instructions.extend(generate_expression(ctx, condition)?);
+            instructions.push("    cmpl $0, %eax".to_string());
+            instructions.push(format!("    jne {start_label}"));
+            Ok(instructions)
+        }
+        Statement::For { init, condition, post, body } => {
+            ctx.push_scope();
+            let start_label = ctx.next_label();
+            let end_label = ctx.next_label();
+            let mut instructions = Vec::new();
+            if let Some(init) = init {
+                instructions.extend(generate_statement(ctx, init)?);
+            }
+            instructions.push(format!("{start_label}:"));
+            if let Some(condition) = condition {
+                instructions.extend(generate_expression(ctx, condition)?);
+                instructions.push("    cmpl $0, %eax".to_string());
+                instructions.push(format!("    je {end_label}"));
+            }
+            instructions.extend(generate_statement(ctx, body)?);
+            if let Some(post) = post {
+                instructions.extend(generate_expression(ctx, post)?);
+            }
+            instructions.push(format!("    jmp {start_label}"));
+            instructions.push(format!("{end_label}:"));
+            ctx.pop_scope();
+            Ok(instructions)
+        }
+    }
+}
+
+fn count_declarations_in_statement(stmt: &Statement) -> usize {
+    match stmt {
+        Statement::Declaration { .. } => 1,
+        Statement::Compound(stmts) => count_declarations(stmts),
+        Statement::If { then_branch, else_branch, .. } => {
+            let mut count = count_declarations_in_statement(then_branch);
+            if let Some(else_branch) = else_branch {
+                count += count_declarations_in_statement(else_branch);
+            }
+            count
+        }
+        Statement::While { body, .. } | Statement::DoWhile { body, .. } => {
+            count_declarations_in_statement(body)
+        }
+        Statement::For { init, body, .. } => {
+            let mut count = 0;
+            if let Some(init) = init {
+                count += count_declarations_in_statement(init);
+            }
+            count += count_declarations_in_statement(body);
+            count
+        }
+        _ => 0,
     }
 }
 
 fn count_declarations(statements: &[Statement]) -> usize {
-    statements
-        .iter()
-        .filter(|s| matches!(s, Statement::Declaration { .. }))
-        .count()
+    statements.iter().map(count_declarations_in_statement).sum()
 }
 
 pub fn generate(program: &Program) -> Result<String, CompileError> {
@@ -130,8 +316,9 @@ pub fn generate(program: &Program) -> Result<String, CompileError> {
     let stack_size = ((var_count * 4 + 15) / 16) * 16;
 
     let mut ctx = Context {
-        variables: HashMap::new(),
+        scopes: vec![HashMap::new()],
         stack_offset: 0,
+        label_counter: 0,
     };
 
     let mut lines = vec![
@@ -233,5 +420,114 @@ mod tests {
     fn generate_redeclaration() {
         let err = compile_err("int main() { int x = 1; int x = 2; return x; }");
         assert!(err.message.contains("already declared"));
+    }
+
+    #[test]
+    fn generate_comparison_equal() {
+        let asm = compile("int main() { return 1 == 2; }");
+        assert!(asm.contains("cmpl %ecx, %eax"));
+        assert!(asm.contains("sete %al"));
+        assert!(asm.contains("movzbl %al, %eax"));
+    }
+
+    #[test]
+    fn generate_comparison_not_equal() {
+        let asm = compile("int main() { return 1 != 2; }");
+        assert!(asm.contains("setne %al"));
+    }
+
+    #[test]
+    fn generate_comparison_less() {
+        let asm = compile("int main() { return 1 < 2; }");
+        assert!(asm.contains("setl %al"));
+    }
+
+    #[test]
+    fn generate_comparison_greater() {
+        let asm = compile("int main() { return 2 > 1; }");
+        assert!(asm.contains("setg %al"));
+    }
+
+    #[test]
+    fn generate_comparison_less_equal() {
+        let asm = compile("int main() { return 1 <= 2; }");
+        assert!(asm.contains("setle %al"));
+    }
+
+    #[test]
+    fn generate_comparison_greater_equal() {
+        let asm = compile("int main() { return 2 >= 1; }");
+        assert!(asm.contains("setge %al"));
+    }
+
+    #[test]
+    fn generate_logical_and() {
+        let asm = compile("int main() { return 1 && 2; }");
+        assert!(asm.contains("cmpl $0, %eax"));
+        assert!(asm.contains("je .L"));
+        assert!(asm.contains("movl $1, %eax"));
+        assert!(asm.contains("movl $0, %eax"));
+    }
+
+    #[test]
+    fn generate_logical_or() {
+        let asm = compile("int main() { return 0 || 1; }");
+        assert!(asm.contains("cmpl $0, %eax"));
+        assert!(asm.contains("jne .L"));
+        assert!(asm.contains("movl $1, %eax"));
+        assert!(asm.contains("movl $0, %eax"));
+    }
+
+    #[test]
+    fn generate_ternary() {
+        let asm = compile("int main() { return 1 ? 42 : 0; }");
+        assert!(asm.contains("cmpl $0, %eax"));
+        assert!(asm.contains("je .L"));
+        assert!(asm.contains("jmp .L"));
+        assert!(asm.contains("movl $42, %eax"));
+    }
+
+    #[test]
+    fn generate_if_statement() {
+        let asm = compile("int main() { int x = 0; if (1) x = 1; return x; }");
+        assert!(asm.contains("cmpl $0, %eax"));
+        assert!(asm.contains("je .L"));
+    }
+
+    #[test]
+    fn generate_if_else() {
+        let asm = compile("int main() { int x; if (1) x = 1; else x = 2; return x; }");
+        assert!(asm.contains("je .L"));
+        assert!(asm.contains("jmp .L"));
+    }
+
+    #[test]
+    fn generate_while_loop() {
+        let asm = compile("int main() { int x = 0; while (x < 5) x = x + 1; return x; }");
+        assert!(asm.contains("jmp .L"));
+        assert!(asm.contains("je .L"));
+    }
+
+    #[test]
+    fn generate_do_while_loop() {
+        let asm = compile("int main() { int x = 0; do x = x + 1; while (x < 5); return x; }");
+        assert!(asm.contains("jne .L"));
+    }
+
+    #[test]
+    fn generate_for_loop() {
+        let asm = compile("int main() { int s = 0; for (int i = 0; i < 5; i = i + 1) s = s + i; return s; }");
+        assert!(asm.contains("jmp .L"));
+        assert!(asm.contains("je .L"));
+    }
+
+    #[test]
+    fn generate_compound_statement() {
+        compile("int main() { int x = 0; { x = 1; } return x; }");
+    }
+
+    #[test]
+    fn generate_variable_shadowing() {
+        compile("int main() { int x = 1; { int x = 2; } return x; }");
     }
 }

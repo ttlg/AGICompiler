@@ -4,6 +4,11 @@ use crate::CompileError;
 pub enum TokenKind {
     Int,
     Return,
+    If,
+    Else,
+    While,
+    Do,
+    For,
     Identifier(String),
     IntLiteral(i64),
     Plus,
@@ -12,8 +17,18 @@ pub enum TokenKind {
     Slash,
     Percent,
     Assign,
+    EqualEqual,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    AmpAmp,
+    PipePipe,
     Tilde,
     Bang,
+    Question,
+    Colon,
     OpenParen,
     CloseParen,
     OpenBrace,
@@ -71,17 +86,97 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 col += 1;
             }
             '=' => {
-                tokens.push(Token { kind: TokenKind::Assign, line, col });
+                let start_col = col;
                 chars.next();
                 col += 1;
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::EqualEqual, line, col: start_col });
+                } else {
+                    tokens.push(Token { kind: TokenKind::Assign, line, col: start_col });
+                }
+            }
+            '!' => {
+                let start_col = col;
+                chars.next();
+                col += 1;
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::BangEqual, line, col: start_col });
+                } else {
+                    tokens.push(Token { kind: TokenKind::Bang, line, col: start_col });
+                }
+            }
+            '<' => {
+                let start_col = col;
+                chars.next();
+                col += 1;
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::LessEqual, line, col: start_col });
+                } else {
+                    tokens.push(Token { kind: TokenKind::Less, line, col: start_col });
+                }
+            }
+            '>' => {
+                let start_col = col;
+                chars.next();
+                col += 1;
+                if chars.peek() == Some(&'=') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::GreaterEqual, line, col: start_col });
+                } else {
+                    tokens.push(Token { kind: TokenKind::Greater, line, col: start_col });
+                }
+            }
+            '&' => {
+                let start_col = col;
+                chars.next();
+                col += 1;
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::AmpAmp, line, col: start_col });
+                } else {
+                    return Err(CompileError {
+                        message: "unexpected character: '&'".to_string(),
+                        line,
+                        col: start_col,
+                    });
+                }
+            }
+            '|' => {
+                let start_col = col;
+                chars.next();
+                col += 1;
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::PipePipe, line, col: start_col });
+                } else {
+                    return Err(CompileError {
+                        message: "unexpected character: '|'".to_string(),
+                        line,
+                        col: start_col,
+                    });
+                }
             }
             '~' => {
                 tokens.push(Token { kind: TokenKind::Tilde, line, col });
                 chars.next();
                 col += 1;
             }
-            '!' => {
-                tokens.push(Token { kind: TokenKind::Bang, line, col });
+            '?' => {
+                tokens.push(Token { kind: TokenKind::Question, line, col });
+                chars.next();
+                col += 1;
+            }
+            ':' => {
+                tokens.push(Token { kind: TokenKind::Colon, line, col });
                 chars.next();
                 col += 1;
             }
@@ -144,6 +239,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 let kind = match ident.as_str() {
                     "int" => TokenKind::Int,
                     "return" => TokenKind::Return,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
+                    "while" => TokenKind::While,
+                    "do" => TokenKind::Do,
+                    "for" => TokenKind::For,
                     _ => TokenKind::Identifier(ident),
                 };
                 tokens.push(Token { kind, line, col: start_col });
@@ -186,56 +286,88 @@ mod tests {
     }
 
     #[test]
-    fn tokenize_unary_operators() {
-        let tokens = tokenize("return -~!5;").unwrap();
+    fn tokenize_comparison_operators() {
+        let tokens = tokenize("== != < <= > >=").unwrap();
         let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
         assert_eq!(
             kinds,
             vec![
-                &TokenKind::Return,
-                &TokenKind::Minus,
-                &TokenKind::Tilde,
-                &TokenKind::Bang,
-                &TokenKind::IntLiteral(5),
-                &TokenKind::Semicolon,
+                &TokenKind::EqualEqual,
+                &TokenKind::BangEqual,
+                &TokenKind::Less,
+                &TokenKind::LessEqual,
+                &TokenKind::Greater,
+                &TokenKind::GreaterEqual,
             ]
         );
     }
 
     #[test]
-    fn tokenize_declaration_and_assignment() {
-        let tokens = tokenize("int x = 5;").unwrap();
+    fn tokenize_logical_operators() {
+        let tokens = tokenize("&& ||").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(kinds, vec![&TokenKind::AmpAmp, &TokenKind::PipePipe]);
+    }
+
+    #[test]
+    fn tokenize_ternary() {
+        let tokens = tokenize("x ? 1 : 0").unwrap();
         let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
         assert_eq!(
             kinds,
             vec![
-                &TokenKind::Int,
+                &TokenKind::Identifier("x".to_string()),
+                &TokenKind::Question,
+                &TokenKind::IntLiteral(1),
+                &TokenKind::Colon,
+                &TokenKind::IntLiteral(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_control_flow_keywords() {
+        let tokens = tokenize("if else while do for").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::If,
+                &TokenKind::Else,
+                &TokenKind::While,
+                &TokenKind::Do,
+                &TokenKind::For,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_assign_vs_equal() {
+        let tokens = tokenize("x = 1 == 2").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
                 &TokenKind::Identifier("x".to_string()),
                 &TokenKind::Assign,
-                &TokenKind::IntLiteral(5),
-                &TokenKind::Semicolon,
+                &TokenKind::IntLiteral(1),
+                &TokenKind::EqualEqual,
+                &TokenKind::IntLiteral(2),
             ]
         );
     }
 
     #[test]
-    fn tokenize_binary_operators() {
-        let tokens = tokenize("1 + 2 * 3 / 4 % 5 - 6").unwrap();
+    fn tokenize_bang_vs_bangequal() {
+        let tokens = tokenize("!x != y").unwrap();
         let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
         assert_eq!(
             kinds,
             vec![
-                &TokenKind::IntLiteral(1),
-                &TokenKind::Plus,
-                &TokenKind::IntLiteral(2),
-                &TokenKind::Star,
-                &TokenKind::IntLiteral(3),
-                &TokenKind::Slash,
-                &TokenKind::IntLiteral(4),
-                &TokenKind::Percent,
-                &TokenKind::IntLiteral(5),
-                &TokenKind::Minus,
-                &TokenKind::IntLiteral(6),
+                &TokenKind::Bang,
+                &TokenKind::Identifier("x".to_string()),
+                &TokenKind::BangEqual,
+                &TokenKind::Identifier("y".to_string()),
             ]
         );
     }

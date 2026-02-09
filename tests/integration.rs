@@ -292,3 +292,217 @@ fn error_assign_to_undeclared() {
     let err = compile("int main() { x = 5; return 0; }").unwrap_err();
     assert!(err.message.contains("undefined variable"));
 }
+
+#[test]
+fn comparison_equal() {
+    let asm = compile("int main() { return 1 == 1; }").unwrap();
+    assert!(asm.contains("cmpl %ecx, %eax"));
+    assert!(asm.contains("sete %al"));
+    assert!(asm.contains("movzbl %al, %eax"));
+}
+
+#[test]
+fn comparison_not_equal() {
+    let asm = compile("int main() { return 1 != 2; }").unwrap();
+    assert!(asm.contains("setne %al"));
+}
+
+#[test]
+fn comparison_less_than() {
+    let asm = compile("int main() { return 1 < 2; }").unwrap();
+    assert!(asm.contains("setl %al"));
+}
+
+#[test]
+fn comparison_less_equal() {
+    let asm = compile("int main() { return 1 <= 2; }").unwrap();
+    assert!(asm.contains("setle %al"));
+}
+
+#[test]
+fn comparison_greater_than() {
+    let asm = compile("int main() { return 2 > 1; }").unwrap();
+    assert!(asm.contains("setg %al"));
+}
+
+#[test]
+fn comparison_greater_equal() {
+    let asm = compile("int main() { return 2 >= 1; }").unwrap();
+    assert!(asm.contains("setge %al"));
+}
+
+#[test]
+fn logical_and() {
+    let asm = compile("int main() { return 1 && 2; }").unwrap();
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("je .L"));
+    assert!(asm.contains("movl $1, %eax"));
+    assert!(asm.contains("movl $0, %eax"));
+}
+
+#[test]
+fn logical_or() {
+    let asm = compile("int main() { return 0 || 1; }").unwrap();
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("jne .L"));
+    assert!(asm.contains("movl $1, %eax"));
+    assert!(asm.contains("movl $0, %eax"));
+}
+
+#[test]
+fn logical_and_short_circuit() {
+    let asm = compile("int main() { return 0 && 1; }").unwrap();
+    assert!(asm.contains("je .L"));
+}
+
+#[test]
+fn logical_or_short_circuit() {
+    let asm = compile("int main() { return 1 || 0; }").unwrap();
+    assert!(asm.contains("jne .L"));
+}
+
+#[test]
+fn if_statement() {
+    let asm = compile("int main() { int x = 0; if (1) x = 1; return x; }").unwrap();
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("je .L"));
+}
+
+#[test]
+fn if_else_statement() {
+    let asm = compile("int main() { int x; if (0) x = 1; else x = 2; return x; }").unwrap();
+    assert!(asm.contains("je .L"));
+    assert!(asm.contains("jmp .L"));
+}
+
+#[test]
+fn if_with_block() {
+    compile("int main() { int x = 0; if (1) { x = 1; } return x; }").unwrap();
+}
+
+#[test]
+fn nested_if_else() {
+    compile("int main() { int x = 0; if (1) { if (0) x = 1; else x = 2; } return x; }").unwrap();
+}
+
+#[test]
+fn ternary_expression() {
+    let asm = compile("int main() { return 1 ? 42 : 0; }").unwrap();
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("je .L"));
+    assert!(asm.contains("jmp .L"));
+    assert!(asm.contains("movl $42, %eax"));
+}
+
+#[test]
+fn ternary_nested() {
+    compile("int main() { return 1 ? 2 ? 3 : 4 : 5; }").unwrap();
+}
+
+#[test]
+fn ternary_in_variable() {
+    compile("int main() { int x = 1 ? 42 : 0; return x; }").unwrap();
+}
+
+#[test]
+fn while_loop() {
+    let asm = compile("int main() { int x = 0; while (x < 5) x = x + 1; return x; }").unwrap();
+    assert!(asm.contains("jmp .L"));
+    assert!(asm.contains("je .L"));
+}
+
+#[test]
+fn while_with_block() {
+    compile("int main() { int x = 0; while (x < 10) { x = x + 1; } return x; }").unwrap();
+}
+
+#[test]
+fn do_while_loop() {
+    let asm = compile("int main() { int x = 0; do x = x + 1; while (x < 5); return x; }").unwrap();
+    assert!(asm.contains("jne .L"));
+}
+
+#[test]
+fn do_while_with_block() {
+    compile("int main() { int x = 0; do { x = x + 1; } while (x < 10); return x; }").unwrap();
+}
+
+#[test]
+fn for_loop() {
+    let asm = compile("int main() { int s = 0; for (int i = 0; i < 5; i = i + 1) s = s + i; return s; }").unwrap();
+    assert!(asm.contains("jmp .L"));
+    assert!(asm.contains("je .L"));
+}
+
+#[test]
+fn for_loop_with_block() {
+    compile("int main() { int s = 0; for (int i = 0; i < 10; i = i + 1) { s = s + i; } return s; }").unwrap();
+}
+
+#[test]
+fn for_loop_empty_init() {
+    compile("int main() { int i = 0; int s = 0; for (; i < 5; i = i + 1) s = s + 1; return s; }").unwrap();
+}
+
+#[test]
+fn for_loop_empty_condition() {
+    compile("int main() { for (int i = 0; ; i = i + 1) return i; }").unwrap();
+}
+
+#[test]
+fn for_loop_all_empty() {
+    compile("int main() { for (;;) return 0; }").unwrap();
+}
+
+#[test]
+fn compound_statement() {
+    compile("int main() { int x = 0; { x = 1; } return x; }").unwrap();
+}
+
+#[test]
+fn compound_with_declaration() {
+    compile("int main() { int x = 1; { int y = 2; x = y; } return x; }").unwrap();
+}
+
+#[test]
+fn variable_shadowing() {
+    compile("int main() { int x = 1; { int x = 2; } return x; }").unwrap();
+}
+
+#[test]
+fn comparison_in_condition() {
+    compile("int main() { int x = 5; if (x > 3) return 1; return 0; }").unwrap();
+}
+
+#[test]
+fn logical_in_condition() {
+    compile("int main() { int x = 5; if (x > 0 && x < 10) return 1; return 0; }").unwrap();
+}
+
+#[test]
+fn nested_loops() {
+    compile("int main() { int s = 0; for (int i = 0; i < 3; i = i + 1) for (int j = 0; j < 3; j = j + 1) s = s + 1; return s; }").unwrap();
+}
+
+#[test]
+fn while_with_comparison() {
+    compile("int main() { int x = 10; while (x > 0) x = x - 1; return x; }").unwrap();
+}
+
+#[test]
+fn error_if_missing_paren() {
+    let err = compile("int main() { if 1 return 0; }").unwrap_err();
+    assert!(err.to_string().contains("expected"));
+}
+
+#[test]
+fn error_while_missing_paren() {
+    let err = compile("int main() { while 1 return 0; }").unwrap_err();
+    assert!(err.to_string().contains("expected"));
+}
+
+#[test]
+fn error_do_while_missing_semicolon() {
+    let err = compile("int main() { do return 0; while (1) }").unwrap_err();
+    assert!(err.to_string().contains("expected"));
+}
