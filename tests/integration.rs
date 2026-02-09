@@ -63,3 +63,64 @@ fn error_missing_brace() {
     let err = compile("int main() { return 0;").unwrap_err();
     assert!(err.to_string().contains("expected"));
 }
+
+#[test]
+fn unary_negate() {
+    let asm = compile("int main() { return -5; }").unwrap();
+    assert!(asm.contains("movl $5, %eax"));
+    assert!(asm.contains("negl %eax"));
+}
+
+#[test]
+fn unary_bitwise_not() {
+    let asm = compile("int main() { return ~0; }").unwrap();
+    assert!(asm.contains("movl $0, %eax"));
+    assert!(asm.contains("notl %eax"));
+}
+
+#[test]
+fn unary_logical_not() {
+    let asm = compile("int main() { return !5; }").unwrap();
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("sete %al"));
+    assert!(asm.contains("movzbl %al, %eax"));
+}
+
+#[test]
+fn unary_nested_negate() {
+    let asm = compile("int main() { return -(-42); }").unwrap();
+    assert!(asm.contains("movl $42, %eax"));
+    assert_eq!(asm.matches("negl %eax").count(), 2);
+}
+
+#[test]
+fn unary_chained() {
+    let asm = compile("int main() { return -~!5; }").unwrap();
+    assert!(asm.contains("movl $5, %eax"));
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("sete %al"));
+    assert!(asm.contains("movzbl %al, %eax"));
+    assert!(asm.contains("notl %eax"));
+    assert!(asm.contains("negl %eax"));
+}
+
+#[test]
+fn unary_logical_not_zero() {
+    let asm = compile("int main() { return !0; }").unwrap();
+    assert!(asm.contains("movl $0, %eax"));
+    assert!(asm.contains("cmpl $0, %eax"));
+    assert!(asm.contains("sete %al"));
+}
+
+#[test]
+fn unary_with_parens() {
+    let asm = compile("int main() { return -(42); }").unwrap();
+    assert!(asm.contains("movl $42, %eax"));
+    assert!(asm.contains("negl %eax"));
+}
+
+#[test]
+fn error_unary_missing_operand() {
+    let err = compile("int main() { return -; }").unwrap_err();
+    assert!(err.to_string().contains("expected"));
+}

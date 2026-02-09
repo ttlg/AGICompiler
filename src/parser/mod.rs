@@ -18,8 +18,19 @@ pub enum Statement {
 }
 
 #[derive(Debug)]
+pub enum UnaryOperator {
+    Negate,
+    BitwiseNot,
+    LogicalNot,
+}
+
+#[derive(Debug)]
 pub enum Expression {
     IntLiteral(i64),
+    UnaryOp {
+        operator: UnaryOperator,
+        operand: Box<Expression>,
+    },
 }
 
 struct Parser<'a> {
@@ -110,12 +121,36 @@ impl<'a> Parser<'a> {
         Ok(Statement::Return(expr))
     }
 
+    fn parse_unary_op(&mut self, operator: UnaryOperator) -> Result<Expression, CompileError> {
+        self.pos += 1;
+        let operand = self.parse_expression()?;
+        Ok(Expression::UnaryOp {
+            operator,
+            operand: Box::new(operand),
+        })
+    }
+
     fn parse_expression(&mut self) -> Result<Expression, CompileError> {
         match self.tokens.get(self.pos) {
             Some(Token { kind: TokenKind::IntLiteral(value), .. }) => {
                 let value = *value;
                 self.pos += 1;
                 Ok(Expression::IntLiteral(value))
+            }
+            Some(Token { kind: TokenKind::Minus, .. }) => {
+                self.parse_unary_op(UnaryOperator::Negate)
+            }
+            Some(Token { kind: TokenKind::Tilde, .. }) => {
+                self.parse_unary_op(UnaryOperator::BitwiseNot)
+            }
+            Some(Token { kind: TokenKind::Bang, .. }) => {
+                self.parse_unary_op(UnaryOperator::LogicalNot)
+            }
+            Some(Token { kind: TokenKind::OpenParen, .. }) => {
+                self.pos += 1;
+                let expr = self.parse_expression()?;
+                self.expect(&TokenKind::CloseParen)?;
+                Ok(expr)
             }
             Some(token) => Err(CompileError {
                 message: format!("expected expression, found {:?}", token.kind),
@@ -149,8 +184,46 @@ mod tests {
         let tokens = tokenize("int main() { return 0; }").unwrap();
         let program = parse(&tokens).unwrap();
         assert_eq!(program.function.name, "main");
-        let Statement::Return(Expression::IntLiteral(val)) = &program.function.body;
-        assert_eq!(*val, 0);
+        assert!(matches!(
+            program.function.body,
+            Statement::Return(Expression::IntLiteral(0))
+        ));
+    }
+
+    #[test]
+    fn parse_unary_negate() {
+        let tokens = tokenize("int main() { return -5; }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(
+            expr,
+            Expression::UnaryOp {
+                operator: UnaryOperator::Negate,
+                operand,
+            } if matches!(**operand, Expression::IntLiteral(5))
+        ));
+    }
+
+    #[test]
+    fn parse_nested_unary() {
+        let tokens = tokenize("int main() { return -~!5; }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(expr, Expression::UnaryOp { operator: UnaryOperator::Negate, .. }));
+    }
+
+    #[test]
+    fn parse_parenthesized_expression() {
+        let tokens = tokenize("int main() { return -(42); }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(
+            expr,
+            Expression::UnaryOp {
+                operand,
+                ..
+            } if matches!(**operand, Expression::IntLiteral(42))
+        ));
     }
 
     #[test]

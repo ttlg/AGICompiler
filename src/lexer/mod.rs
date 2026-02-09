@@ -6,6 +6,9 @@ pub enum TokenKind {
     Return,
     Identifier(String),
     IntLiteral(i64),
+    Minus,
+    Tilde,
+    Bang,
     OpenParen,
     CloseParen,
     OpenBrace,
@@ -36,6 +39,21 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 chars.next();
                 line += 1;
                 col = 1;
+            }
+            '-' => {
+                tokens.push(Token { kind: TokenKind::Minus, line, col });
+                chars.next();
+                col += 1;
+            }
+            '~' => {
+                tokens.push(Token { kind: TokenKind::Tilde, line, col });
+                chars.next();
+                col += 1;
+            }
+            '!' => {
+                tokens.push(Token { kind: TokenKind::Bang, line, col });
+                chars.next();
+                col += 1;
             }
             '(' => {
                 tokens.push(Token { kind: TokenKind::OpenParen, line, col });
@@ -133,6 +151,23 @@ mod tests {
                 &TokenKind::IntLiteral(42),
                 &TokenKind::Semicolon,
                 &TokenKind::CloseBrace,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_unary_operators() {
+        let tokens = tokenize("return -~!5;").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Return,
+                &TokenKind::Minus,
+                &TokenKind::Tilde,
+                &TokenKind::Bang,
+                &TokenKind::IntLiteral(5),
+                &TokenKind::Semicolon,
             ]
         );
     }
