@@ -1,5 +1,5 @@
 use crate::CompileError;
-use crate::parser::{Expression, Program, Statement, UnaryOperator};
+use crate::parser::{BinaryOperator, Expression, Program, Statement, UnaryOperator};
 
 fn generate_expression(expr: &Expression) -> Vec<String> {
     match expr {
@@ -23,6 +23,34 @@ fn generate_expression(expr: &Expression) -> Vec<String> {
             }
             instructions
         }
+        Expression::BinaryOp { operator, left, right } => {
+            let mut instructions = generate_expression(left);
+            instructions.push("    push %eax".to_string());
+            instructions.extend(generate_expression(right));
+            instructions.push("    movl %eax, %ecx".to_string());
+            instructions.push("    pop %eax".to_string());
+            match operator {
+                BinaryOperator::Add => {
+                    instructions.push("    addl %ecx, %eax".to_string());
+                }
+                BinaryOperator::Subtract => {
+                    instructions.push("    subl %ecx, %eax".to_string());
+                }
+                BinaryOperator::Multiply => {
+                    instructions.push("    imull %ecx, %eax".to_string());
+                }
+                BinaryOperator::Divide => {
+                    instructions.push("    cdq".to_string());
+                    instructions.push("    idivl %ecx".to_string());
+                }
+                BinaryOperator::Modulo => {
+                    instructions.push("    cdq".to_string());
+                    instructions.push("    idivl %ecx".to_string());
+                    instructions.push("    movl %edx, %eax".to_string());
+                }
+            }
+            instructions
+        }
     }
 }
 
@@ -41,37 +69,35 @@ mod tests {
     use crate::lexer::tokenize;
     use crate::parser::parse;
 
+    fn compile(source: &str) -> String {
+        let tokens = tokenize(source).unwrap();
+        let ast = parse(&tokens).unwrap();
+        generate(&ast).unwrap()
+    }
+
     #[test]
     fn generate_return_42() {
-        let tokens = tokenize("int main() { return 42; }").unwrap();
-        let ast = parse(&tokens).unwrap();
-        let asm = generate(&ast).unwrap();
+        let asm = compile("int main() { return 42; }");
         assert_eq!(asm, "    .globl main\nmain:\n    movl $42, %eax\n    ret\n");
     }
 
     #[test]
     fn generate_negate() {
-        let tokens = tokenize("int main() { return -5; }").unwrap();
-        let ast = parse(&tokens).unwrap();
-        let asm = generate(&ast).unwrap();
+        let asm = compile("int main() { return -5; }");
         assert!(asm.contains("movl $5, %eax"));
         assert!(asm.contains("negl %eax"));
     }
 
     #[test]
     fn generate_bitwise_not() {
-        let tokens = tokenize("int main() { return ~0; }").unwrap();
-        let ast = parse(&tokens).unwrap();
-        let asm = generate(&ast).unwrap();
+        let asm = compile("int main() { return ~0; }");
         assert!(asm.contains("movl $0, %eax"));
         assert!(asm.contains("notl %eax"));
     }
 
     #[test]
     fn generate_logical_not() {
-        let tokens = tokenize("int main() { return !5; }").unwrap();
-        let ast = parse(&tokens).unwrap();
-        let asm = generate(&ast).unwrap();
+        let asm = compile("int main() { return !5; }");
         assert!(asm.contains("cmpl $0, %eax"));
         assert!(asm.contains("sete %al"));
         assert!(asm.contains("movzbl %al, %eax"));
@@ -79,10 +105,44 @@ mod tests {
 
     #[test]
     fn generate_nested_unary() {
-        let tokens = tokenize("int main() { return -(-42); }").unwrap();
-        let ast = parse(&tokens).unwrap();
-        let asm = generate(&ast).unwrap();
+        let asm = compile("int main() { return -(-42); }");
         assert!(asm.contains("movl $42, %eax"));
         assert_eq!(asm.matches("negl %eax").count(), 2);
+    }
+
+    #[test]
+    fn generate_add() {
+        let asm = compile("int main() { return 1 + 2; }");
+        assert!(asm.contains("movl $1, %eax"));
+        assert!(asm.contains("push %eax"));
+        assert!(asm.contains("movl $2, %eax"));
+        assert!(asm.contains("addl %ecx, %eax"));
+    }
+
+    #[test]
+    fn generate_subtract() {
+        let asm = compile("int main() { return 5 - 3; }");
+        assert!(asm.contains("subl %ecx, %eax"));
+    }
+
+    #[test]
+    fn generate_multiply() {
+        let asm = compile("int main() { return 2 * 3; }");
+        assert!(asm.contains("imull %ecx, %eax"));
+    }
+
+    #[test]
+    fn generate_divide() {
+        let asm = compile("int main() { return 10 / 3; }");
+        assert!(asm.contains("cdq"));
+        assert!(asm.contains("idivl %ecx"));
+    }
+
+    #[test]
+    fn generate_modulo() {
+        let asm = compile("int main() { return 10 % 3; }");
+        assert!(asm.contains("cdq"));
+        assert!(asm.contains("idivl %ecx"));
+        assert!(asm.contains("movl %edx, %eax"));
     }
 }

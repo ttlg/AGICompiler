@@ -124,3 +124,93 @@ fn error_unary_missing_operand() {
     let err = compile("int main() { return -; }").unwrap_err();
     assert!(err.to_string().contains("expected"));
 }
+
+#[test]
+fn binary_add() {
+    let asm = compile("int main() { return 1 + 2; }").unwrap();
+    assert!(asm.contains("movl $1, %eax"));
+    assert!(asm.contains("push %eax"));
+    assert!(asm.contains("movl $2, %eax"));
+    assert!(asm.contains("movl %eax, %ecx"));
+    assert!(asm.contains("pop %eax"));
+    assert!(asm.contains("addl %ecx, %eax"));
+}
+
+#[test]
+fn binary_subtract() {
+    let asm = compile("int main() { return 5 - 3; }").unwrap();
+    assert!(asm.contains("movl $5, %eax"));
+    assert!(asm.contains("movl $3, %eax"));
+    assert!(asm.contains("subl %ecx, %eax"));
+}
+
+#[test]
+fn binary_multiply() {
+    let asm = compile("int main() { return 2 * 3; }").unwrap();
+    assert!(asm.contains("imull %ecx, %eax"));
+}
+
+#[test]
+fn binary_divide() {
+    let asm = compile("int main() { return 10 / 3; }").unwrap();
+    assert!(asm.contains("cdq"));
+    assert!(asm.contains("idivl %ecx"));
+}
+
+#[test]
+fn binary_modulo() {
+    let asm = compile("int main() { return 10 % 3; }").unwrap();
+    assert!(asm.contains("cdq"));
+    assert!(asm.contains("idivl %ecx"));
+    assert!(asm.contains("movl %edx, %eax"));
+}
+
+#[test]
+fn precedence_mul_over_add() {
+    let asm = compile("int main() { return 2 + 3 * 4; }").unwrap();
+    assert!(asm.contains("movl $3, %eax"));
+    assert!(asm.contains("movl $4, %eax"));
+    assert!(asm.contains("imull %ecx, %eax"));
+    assert!(asm.contains("addl %ecx, %eax"));
+}
+
+#[test]
+fn precedence_parens_override() {
+    let asm = compile("int main() { return (1 + 2) * 3; }").unwrap();
+    assert!(asm.contains("addl %ecx, %eax"));
+    assert!(asm.contains("imull %ecx, %eax"));
+}
+
+#[test]
+fn left_associativity() {
+    let asm = compile("int main() { return 10 - 3 - 2; }").unwrap();
+    assert_eq!(asm.matches("subl %ecx, %eax").count(), 2);
+}
+
+#[test]
+fn unary_with_binary() {
+    let asm = compile("int main() { return -2 + 3; }").unwrap();
+    assert!(asm.contains("negl %eax"));
+    assert!(asm.contains("addl %ecx, %eax"));
+}
+
+#[test]
+fn complex_expression() {
+    let asm = compile("int main() { return (1 + 2) * (3 - 4) / 5; }").unwrap();
+    assert!(asm.contains("addl %ecx, %eax"));
+    assert!(asm.contains("subl %ecx, %eax"));
+    assert!(asm.contains("imull %ecx, %eax"));
+    assert!(asm.contains("idivl %ecx"));
+}
+
+#[test]
+fn error_binary_missing_right_operand() {
+    let err = compile("int main() { return 1 +; }").unwrap_err();
+    assert!(err.to_string().contains("expected"));
+}
+
+#[test]
+fn error_binary_missing_left_operand() {
+    let err = compile("int main() { return * 2; }").unwrap_err();
+    assert!(err.to_string().contains("expected"));
+}

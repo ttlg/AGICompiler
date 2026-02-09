@@ -6,7 +6,11 @@ pub enum TokenKind {
     Return,
     Identifier(String),
     IntLiteral(i64),
+    Plus,
     Minus,
+    Star,
+    Slash,
+    Percent,
     Tilde,
     Bang,
     OpenParen,
@@ -40,8 +44,28 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 line += 1;
                 col = 1;
             }
+            '+' => {
+                tokens.push(Token { kind: TokenKind::Plus, line, col });
+                chars.next();
+                col += 1;
+            }
             '-' => {
                 tokens.push(Token { kind: TokenKind::Minus, line, col });
+                chars.next();
+                col += 1;
+            }
+            '*' => {
+                tokens.push(Token { kind: TokenKind::Star, line, col });
+                chars.next();
+                col += 1;
+            }
+            '/' => {
+                tokens.push(Token { kind: TokenKind::Slash, line, col });
+                chars.next();
+                col += 1;
+            }
+            '%' => {
+                tokens.push(Token { kind: TokenKind::Percent, line, col });
                 chars.next();
                 col += 1;
             }
@@ -168,6 +192,28 @@ mod tests {
                 &TokenKind::Bang,
                 &TokenKind::IntLiteral(5),
                 &TokenKind::Semicolon,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_binary_operators() {
+        let tokens = tokenize("1 + 2 * 3 / 4 % 5 - 6").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::IntLiteral(1),
+                &TokenKind::Plus,
+                &TokenKind::IntLiteral(2),
+                &TokenKind::Star,
+                &TokenKind::IntLiteral(3),
+                &TokenKind::Slash,
+                &TokenKind::IntLiteral(4),
+                &TokenKind::Percent,
+                &TokenKind::IntLiteral(5),
+                &TokenKind::Minus,
+                &TokenKind::IntLiteral(6),
             ]
         );
     }

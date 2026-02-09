@@ -25,11 +25,25 @@ pub enum UnaryOperator {
 }
 
 #[derive(Debug)]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Modulo,
+}
+
+#[derive(Debug)]
 pub enum Expression {
     IntLiteral(i64),
     UnaryOp {
         operator: UnaryOperator,
         operand: Box<Expression>,
+    },
+    BinaryOp {
+        operator: BinaryOperator,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
 }
 
@@ -121,30 +135,73 @@ impl<'a> Parser<'a> {
         Ok(Statement::Return(expr))
     }
 
-    fn parse_unary_op(&mut self, operator: UnaryOperator) -> Result<Expression, CompileError> {
-        self.pos += 1;
-        let operand = self.parse_expression()?;
-        Ok(Expression::UnaryOp {
-            operator,
-            operand: Box::new(operand),
-        })
+    fn parse_expression(&mut self) -> Result<Expression, CompileError> {
+        self.parse_additive()
     }
 
-    fn parse_expression(&mut self) -> Result<Expression, CompileError> {
+    fn parse_additive(&mut self) -> Result<Expression, CompileError> {
+        let mut left = self.parse_multiplicative()?;
+        loop {
+            let operator = match self.tokens.get(self.pos) {
+                Some(Token { kind: TokenKind::Plus, .. }) => BinaryOperator::Add,
+                Some(Token { kind: TokenKind::Minus, .. }) => BinaryOperator::Subtract,
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_multiplicative()?;
+            left = Expression::BinaryOp {
+                operator,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_multiplicative(&mut self) -> Result<Expression, CompileError> {
+        let mut left = self.parse_unary()?;
+        loop {
+            let operator = match self.tokens.get(self.pos) {
+                Some(Token { kind: TokenKind::Star, .. }) => BinaryOperator::Multiply,
+                Some(Token { kind: TokenKind::Slash, .. }) => BinaryOperator::Divide,
+                Some(Token { kind: TokenKind::Percent, .. }) => BinaryOperator::Modulo,
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_unary()?;
+            left = Expression::BinaryOp {
+                operator,
+                left: Box::new(left),
+                right: Box::new(right),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expression, CompileError> {
+        let operator = match self.tokens.get(self.pos) {
+            Some(Token { kind: TokenKind::Minus, .. }) => Some(UnaryOperator::Negate),
+            Some(Token { kind: TokenKind::Tilde, .. }) => Some(UnaryOperator::BitwiseNot),
+            Some(Token { kind: TokenKind::Bang, .. }) => Some(UnaryOperator::LogicalNot),
+            _ => None,
+        };
+        if let Some(operator) = operator {
+            self.pos += 1;
+            let operand = self.parse_unary()?;
+            return Ok(Expression::UnaryOp {
+                operator,
+                operand: Box::new(operand),
+            });
+        }
+        self.parse_primary()
+    }
+
+    fn parse_primary(&mut self) -> Result<Expression, CompileError> {
         match self.tokens.get(self.pos) {
             Some(Token { kind: TokenKind::IntLiteral(value), .. }) => {
                 let value = *value;
                 self.pos += 1;
                 Ok(Expression::IntLiteral(value))
-            }
-            Some(Token { kind: TokenKind::Minus, .. }) => {
-                self.parse_unary_op(UnaryOperator::Negate)
-            }
-            Some(Token { kind: TokenKind::Tilde, .. }) => {
-                self.parse_unary_op(UnaryOperator::BitwiseNot)
-            }
-            Some(Token { kind: TokenKind::Bang, .. }) => {
-                self.parse_unary_op(UnaryOperator::LogicalNot)
             }
             Some(Token { kind: TokenKind::OpenParen, .. }) => {
                 self.pos += 1;
@@ -223,6 +280,62 @@ mod tests {
                 operand,
                 ..
             } if matches!(**operand, Expression::IntLiteral(42))
+        ));
+    }
+
+    #[test]
+    fn parse_binary_add() {
+        let tokens = tokenize("int main() { return 1 + 2; }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp { operator: BinaryOperator::Add, .. }
+        ));
+    }
+
+    #[test]
+    fn parse_precedence_mul_over_add() {
+        let tokens = tokenize("int main() { return 1 + 2 * 3; }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp {
+                operator: BinaryOperator::Add,
+                right,
+                ..
+            } if matches!(**right, Expression::BinaryOp { operator: BinaryOperator::Multiply, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_left_associativity() {
+        let tokens = tokenize("int main() { return 1 - 2 - 3; }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp {
+                operator: BinaryOperator::Subtract,
+                left,
+                ..
+            } if matches!(**left, Expression::BinaryOp { operator: BinaryOperator::Subtract, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_parens_override_precedence() {
+        let tokens = tokenize("int main() { return (1 + 2) * 3; }").unwrap();
+        let program = parse(&tokens).unwrap();
+        let Statement::Return(ref expr) = program.function.body;
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp {
+                operator: BinaryOperator::Multiply,
+                left,
+                ..
+            } if matches!(**left, Expression::BinaryOp { operator: BinaryOperator::Add, .. })
         ));
     }
 
