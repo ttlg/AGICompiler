@@ -11,6 +11,7 @@ pub enum TokenKind {
     Star,
     Slash,
     Percent,
+    Assign,
     Tilde,
     Bang,
     OpenParen,
@@ -66,6 +67,11 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
             }
             '%' => {
                 tokens.push(Token { kind: TokenKind::Percent, line, col });
+                chars.next();
+                col += 1;
+            }
+            '=' => {
+                tokens.push(Token { kind: TokenKind::Assign, line, col });
                 chars.next();
                 col += 1;
             }
@@ -190,6 +196,22 @@ mod tests {
                 &TokenKind::Minus,
                 &TokenKind::Tilde,
                 &TokenKind::Bang,
+                &TokenKind::IntLiteral(5),
+                &TokenKind::Semicolon,
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_declaration_and_assignment() {
+        let tokens = tokenize("int x = 5;").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Int,
+                &TokenKind::Identifier("x".to_string()),
+                &TokenKind::Assign,
                 &TokenKind::IntLiteral(5),
                 &TokenKind::Semicolon,
             ]

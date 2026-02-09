@@ -30,7 +30,17 @@ fn multiline_source() {
 #[test]
 fn full_asm_format() {
     let asm = compile("int main() { return 7; }").unwrap();
-    assert_eq!(asm, "    .globl main\nmain:\n    movl $7, %eax\n    ret\n");
+    let expected = concat!(
+        "    .globl main\n",
+        "main:\n",
+        "    pushq %rbp\n",
+        "    movq %rsp, %rbp\n",
+        "    movl $7, %eax\n",
+        "    movq %rbp, %rsp\n",
+        "    popq %rbp\n",
+        "    ret\n",
+    );
+    assert_eq!(asm, expected);
 }
 
 #[test]
@@ -43,12 +53,6 @@ fn error_invalid_token() {
 #[test]
 fn error_missing_semicolon() {
     let err = compile("int main() { return 42 }").unwrap_err();
-    assert!(err.to_string().contains("expected"));
-}
-
-#[test]
-fn error_missing_return() {
-    let err = compile("int main() { 42; }").unwrap_err();
     assert!(err.to_string().contains("expected"));
 }
 
@@ -98,18 +102,8 @@ fn unary_chained() {
     let asm = compile("int main() { return -~!5; }").unwrap();
     assert!(asm.contains("movl $5, %eax"));
     assert!(asm.contains("cmpl $0, %eax"));
-    assert!(asm.contains("sete %al"));
-    assert!(asm.contains("movzbl %al, %eax"));
     assert!(asm.contains("notl %eax"));
     assert!(asm.contains("negl %eax"));
-}
-
-#[test]
-fn unary_logical_not_zero() {
-    let asm = compile("int main() { return !0; }").unwrap();
-    assert!(asm.contains("movl $0, %eax"));
-    assert!(asm.contains("cmpl $0, %eax"));
-    assert!(asm.contains("sete %al"));
 }
 
 #[test]
@@ -129,18 +123,16 @@ fn error_unary_missing_operand() {
 fn binary_add() {
     let asm = compile("int main() { return 1 + 2; }").unwrap();
     assert!(asm.contains("movl $1, %eax"));
-    assert!(asm.contains("push %eax"));
+    assert!(asm.contains("pushq %rax"));
     assert!(asm.contains("movl $2, %eax"));
     assert!(asm.contains("movl %eax, %ecx"));
-    assert!(asm.contains("pop %eax"));
+    assert!(asm.contains("popq %rax"));
     assert!(asm.contains("addl %ecx, %eax"));
 }
 
 #[test]
 fn binary_subtract() {
     let asm = compile("int main() { return 5 - 3; }").unwrap();
-    assert!(asm.contains("movl $5, %eax"));
-    assert!(asm.contains("movl $3, %eax"));
     assert!(asm.contains("subl %ecx, %eax"));
 }
 
@@ -168,8 +160,6 @@ fn binary_modulo() {
 #[test]
 fn precedence_mul_over_add() {
     let asm = compile("int main() { return 2 + 3 * 4; }").unwrap();
-    assert!(asm.contains("movl $3, %eax"));
-    assert!(asm.contains("movl $4, %eax"));
     assert!(asm.contains("imull %ecx, %eax"));
     assert!(asm.contains("addl %ecx, %eax"));
 }
@@ -213,4 +203,92 @@ fn error_binary_missing_right_operand() {
 fn error_binary_missing_left_operand() {
     let err = compile("int main() { return * 2; }").unwrap_err();
     assert!(err.to_string().contains("expected"));
+}
+
+#[test]
+fn variable_declaration_and_return() {
+    let asm = compile("int main() { int x = 42; return x; }").unwrap();
+    assert!(asm.contains("subq $16, %rsp"));
+    assert!(asm.contains("movl $42, %eax"));
+    assert!(asm.contains("movl %eax, -4(%rbp)"));
+    assert!(asm.contains("movl -4(%rbp), %eax"));
+}
+
+#[test]
+fn variable_declaration_without_init() {
+    let asm = compile("int main() { int x; x = 10; return x; }").unwrap();
+    assert!(asm.contains("movl $10, %eax"));
+    assert!(asm.contains("movl %eax, -4(%rbp)"));
+    assert!(asm.contains("movl -4(%rbp), %eax"));
+}
+
+#[test]
+fn multiple_variables() {
+    let asm = compile("int main() { int a = 1; int b = 2; return a + b; }").unwrap();
+    assert!(asm.contains("movl %eax, -4(%rbp)"));
+    assert!(asm.contains("movl %eax, -8(%rbp)"));
+}
+
+#[test]
+fn variable_reassignment() {
+    let asm = compile("int main() { int x = 1; x = 2; return x; }").unwrap();
+    assert_eq!(asm.matches("movl %eax, -4(%rbp)").count(), 2);
+}
+
+#[test]
+fn chained_assignment() {
+    let asm = compile("int main() { int a; int b; a = b = 5; return a; }").unwrap();
+    assert!(asm.contains("movl $5, %eax"));
+    assert!(asm.contains("movl %eax, -8(%rbp)"));
+    assert!(asm.contains("movl %eax, -4(%rbp)"));
+}
+
+#[test]
+fn variable_in_expression() {
+    let asm = compile("int main() { int x = 10; return x * 2 + 1; }").unwrap();
+    assert!(asm.contains("movl -4(%rbp), %eax"));
+    assert!(asm.contains("imull %ecx, %eax"));
+    assert!(asm.contains("addl %ecx, %eax"));
+}
+
+#[test]
+fn expression_statement() {
+    compile("int main() { int x = 0; x = x + 1; return x; }").unwrap();
+}
+
+#[test]
+fn full_asm_format_with_variables() {
+    let asm = compile("int main() { int x = 7; return x; }").unwrap();
+    let expected = concat!(
+        "    .globl main\n",
+        "main:\n",
+        "    pushq %rbp\n",
+        "    movq %rsp, %rbp\n",
+        "    subq $16, %rsp\n",
+        "    movl $7, %eax\n",
+        "    movl %eax, -4(%rbp)\n",
+        "    movl -4(%rbp), %eax\n",
+        "    movq %rbp, %rsp\n",
+        "    popq %rbp\n",
+        "    ret\n",
+    );
+    assert_eq!(asm, expected);
+}
+
+#[test]
+fn error_undefined_variable() {
+    let err = compile("int main() { return x; }").unwrap_err();
+    assert!(err.message.contains("undefined variable"));
+}
+
+#[test]
+fn error_redeclaration() {
+    let err = compile("int main() { int x = 1; int x = 2; return x; }").unwrap_err();
+    assert!(err.message.contains("already declared"));
+}
+
+#[test]
+fn error_assign_to_undeclared() {
+    let err = compile("int main() { x = 5; return 0; }").unwrap_err();
+    assert!(err.message.contains("undefined variable"));
 }

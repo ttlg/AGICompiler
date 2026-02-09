@@ -9,12 +9,17 @@ pub struct Program {
 #[derive(Debug)]
 pub struct Function {
     pub name: String,
-    pub body: Statement,
+    pub body: Vec<Statement>,
 }
 
 #[derive(Debug)]
 pub enum Statement {
     Return(Expression),
+    Declaration {
+        name: String,
+        initializer: Option<Expression>,
+    },
+    Expression(Expression),
 }
 
 #[derive(Debug)]
@@ -36,6 +41,7 @@ pub enum BinaryOperator {
 #[derive(Debug)]
 pub enum Expression {
     IntLiteral(i64),
+    Variable(String),
     UnaryOp {
         operator: UnaryOperator,
         operand: Box<Expression>,
@@ -44,6 +50,10 @@ pub enum Expression {
         operator: BinaryOperator,
         left: Box<Expression>,
         right: Box<Expression>,
+    },
+    Assignment {
+        name: String,
+        value: Box<Expression>,
     },
 }
 
@@ -123,19 +133,71 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::OpenParen)?;
         self.expect(&TokenKind::CloseParen)?;
         self.expect(&TokenKind::OpenBrace)?;
-        let body = self.parse_statement()?;
+        let mut body = Vec::new();
+        while let Some(token) = self.tokens.get(self.pos) {
+            if token.kind == TokenKind::CloseBrace {
+                break;
+            }
+            body.push(self.parse_statement()?);
+        }
         self.expect(&TokenKind::CloseBrace)?;
         Ok(Function { name, body })
     }
 
     fn parse_statement(&mut self) -> Result<Statement, CompileError> {
-        self.expect(&TokenKind::Return)?;
-        let expr = self.parse_expression()?;
-        self.expect(&TokenKind::Semicolon)?;
-        Ok(Statement::Return(expr))
+        match self.tokens.get(self.pos) {
+            Some(Token { kind: TokenKind::Return, .. }) => {
+                self.pos += 1;
+                let expr = self.parse_expression()?;
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(Statement::Return(expr))
+            }
+            Some(Token { kind: TokenKind::Int, .. }) => {
+                self.pos += 1;
+                let name = self.expect_identifier()?;
+                let initializer = if matches!(
+                    self.tokens.get(self.pos),
+                    Some(Token { kind: TokenKind::Assign, .. })
+                ) {
+                    self.pos += 1;
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(Statement::Declaration { name, initializer })
+            }
+            Some(_) => {
+                let expr = self.parse_expression()?;
+                self.expect(&TokenKind::Semicolon)?;
+                Ok(Statement::Expression(expr))
+            }
+            None => {
+                let (line, col) = self.current_location();
+                Err(CompileError {
+                    message: "expected statement, found end of input".to_string(),
+                    line,
+                    col,
+                })
+            }
+        }
     }
 
     fn parse_expression(&mut self) -> Result<Expression, CompileError> {
+        if let Some(Token { kind: TokenKind::Identifier(name), .. }) = self.tokens.get(self.pos) {
+            if matches!(
+                self.tokens.get(self.pos + 1),
+                Some(Token { kind: TokenKind::Assign, .. })
+            ) {
+                let name = name.clone();
+                self.pos += 2;
+                let value = self.parse_expression()?;
+                return Ok(Expression::Assignment {
+                    name,
+                    value: Box::new(value),
+                });
+            }
+        }
         self.parse_additive()
     }
 
@@ -203,6 +265,11 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 Ok(Expression::IntLiteral(value))
             }
+            Some(Token { kind: TokenKind::Identifier(name), .. }) => {
+                let name = name.clone();
+                self.pos += 1;
+                Ok(Expression::Variable(name))
+            }
             Some(Token { kind: TokenKind::OpenParen, .. }) => {
                 self.pos += 1;
                 let expr = self.parse_expression()?;
@@ -236,22 +303,26 @@ mod tests {
     use super::*;
     use crate::lexer::tokenize;
 
+    fn parse_source(source: &str) -> Program {
+        let tokens = tokenize(source).unwrap();
+        parse(&tokens).unwrap()
+    }
+
     #[test]
     fn parse_return_0() {
-        let tokens = tokenize("int main() { return 0; }").unwrap();
-        let program = parse(&tokens).unwrap();
+        let program = parse_source("int main() { return 0; }");
         assert_eq!(program.function.name, "main");
+        assert_eq!(program.function.body.len(), 1);
         assert!(matches!(
-            program.function.body,
+            program.function.body[0],
             Statement::Return(Expression::IntLiteral(0))
         ));
     }
 
     #[test]
     fn parse_unary_negate() {
-        let tokens = tokenize("int main() { return -5; }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return -5; }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(
             expr,
             Expression::UnaryOp {
@@ -263,17 +334,15 @@ mod tests {
 
     #[test]
     fn parse_nested_unary() {
-        let tokens = tokenize("int main() { return -~!5; }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return -~!5; }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(expr, Expression::UnaryOp { operator: UnaryOperator::Negate, .. }));
     }
 
     #[test]
     fn parse_parenthesized_expression() {
-        let tokens = tokenize("int main() { return -(42); }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return -(42); }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(
             expr,
             Expression::UnaryOp {
@@ -285,9 +354,8 @@ mod tests {
 
     #[test]
     fn parse_binary_add() {
-        let tokens = tokenize("int main() { return 1 + 2; }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return 1 + 2; }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(
             expr,
             Expression::BinaryOp { operator: BinaryOperator::Add, .. }
@@ -296,9 +364,8 @@ mod tests {
 
     #[test]
     fn parse_precedence_mul_over_add() {
-        let tokens = tokenize("int main() { return 1 + 2 * 3; }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return 1 + 2 * 3; }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(
             expr,
             Expression::BinaryOp {
@@ -311,9 +378,8 @@ mod tests {
 
     #[test]
     fn parse_left_associativity() {
-        let tokens = tokenize("int main() { return 1 - 2 - 3; }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return 1 - 2 - 3; }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(
             expr,
             Expression::BinaryOp {
@@ -326,9 +392,8 @@ mod tests {
 
     #[test]
     fn parse_parens_override_precedence() {
-        let tokens = tokenize("int main() { return (1 + 2) * 3; }").unwrap();
-        let program = parse(&tokens).unwrap();
-        let Statement::Return(ref expr) = program.function.body;
+        let program = parse_source("int main() { return (1 + 2) * 3; }");
+        let Statement::Return(ref expr) = program.function.body[0] else { panic!() };
         assert!(matches!(
             expr,
             Expression::BinaryOp {
@@ -336,6 +401,66 @@ mod tests {
                 left,
                 ..
             } if matches!(**left, Expression::BinaryOp { operator: BinaryOperator::Add, .. })
+        ));
+    }
+
+    #[test]
+    fn parse_declaration_with_init() {
+        let program = parse_source("int main() { int x = 5; return x; }");
+        assert_eq!(program.function.body.len(), 2);
+        assert!(matches!(
+            &program.function.body[0],
+            Statement::Declaration { name, initializer: Some(Expression::IntLiteral(5)) }
+            if name == "x"
+        ));
+    }
+
+    #[test]
+    fn parse_declaration_without_init() {
+        let program = parse_source("int main() { int x; return 0; }");
+        assert!(matches!(
+            &program.function.body[0],
+            Statement::Declaration { name, initializer: None }
+            if name == "x"
+        ));
+    }
+
+    #[test]
+    fn parse_assignment_expression() {
+        let program = parse_source("int main() { int x; x = 10; return x; }");
+        assert_eq!(program.function.body.len(), 3);
+        let Statement::Expression(ref expr) = program.function.body[1] else { panic!() };
+        assert!(matches!(
+            expr,
+            Expression::Assignment { name, .. }
+            if name == "x"
+        ));
+    }
+
+    #[test]
+    fn parse_chained_assignment() {
+        let program = parse_source("int main() { int a; int b; a = b = 5; return a; }");
+        let Statement::Expression(ref expr) = program.function.body[2] else { panic!() };
+        assert!(matches!(
+            expr,
+            Expression::Assignment {
+                name,
+                value,
+            } if name == "a" && matches!(**value, Expression::Assignment { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_variable_in_expression() {
+        let program = parse_source("int main() { int x = 3; return x + 1; }");
+        let Statement::Return(ref expr) = program.function.body[1] else { panic!() };
+        assert!(matches!(
+            expr,
+            Expression::BinaryOp {
+                operator: BinaryOperator::Add,
+                left,
+                ..
+            } if matches!(**left, Expression::Variable(ref n) if n == "x")
         ));
     }
 
