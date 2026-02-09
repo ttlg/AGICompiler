@@ -1,3 +1,4 @@
+pub mod preprocessor;
 pub mod lexer;
 pub mod parser;
 pub mod codegen;
@@ -20,7 +21,8 @@ impl fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 pub fn compile(source: &str) -> Result<String, CompileError> {
-    let tokens = lexer::tokenize(source)?;
+    let preprocessed = preprocessor::preprocess(source)?;
+    let tokens = lexer::tokenize(&preprocessed)?;
     let ast = parser::parse(&tokens)?;
     let asm = codegen::generate(&ast)?;
     Ok(asm)

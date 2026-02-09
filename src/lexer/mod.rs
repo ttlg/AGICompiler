@@ -9,8 +9,10 @@ pub enum TokenKind {
     While,
     Do,
     For,
+    Char,
     Identifier(String),
     IntLiteral(i64),
+    StringLiteral(String),
     Plus,
     Minus,
     Star,
@@ -34,6 +36,14 @@ pub enum TokenKind {
     OpenBrace,
     CloseBrace,
     Semicolon,
+    Comma,
+    Ampersand,
+    OpenBracket,
+    CloseBracket,
+    Struct,
+    Union,
+    Dot,
+    Arrow,
 }
 
 #[derive(Debug, Clone)]
@@ -66,9 +76,16 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 col += 1;
             }
             '-' => {
-                tokens.push(Token { kind: TokenKind::Minus, line, col });
+                let start_col = col;
                 chars.next();
                 col += 1;
+                if chars.peek() == Some(&'>') {
+                    chars.next();
+                    col += 1;
+                    tokens.push(Token { kind: TokenKind::Arrow, line, col: start_col });
+                } else {
+                    tokens.push(Token { kind: TokenKind::Minus, line, col: start_col });
+                }
             }
             '*' => {
                 tokens.push(Token { kind: TokenKind::Star, line, col });
@@ -142,11 +159,7 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                     col += 1;
                     tokens.push(Token { kind: TokenKind::AmpAmp, line, col: start_col });
                 } else {
-                    return Err(CompileError {
-                        message: "unexpected character: '&'".to_string(),
-                        line,
-                        col: start_col,
-                    });
+                    tokens.push(Token { kind: TokenKind::Ampersand, line, col: start_col });
                 }
             }
             '|' => {
@@ -205,6 +218,76 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 chars.next();
                 col += 1;
             }
+            ',' => {
+                tokens.push(Token { kind: TokenKind::Comma, line, col });
+                chars.next();
+                col += 1;
+            }
+            '[' => {
+                tokens.push(Token { kind: TokenKind::OpenBracket, line, col });
+                chars.next();
+                col += 1;
+            }
+            ']' => {
+                tokens.push(Token { kind: TokenKind::CloseBracket, line, col });
+                chars.next();
+                col += 1;
+            }
+            '.' => {
+                tokens.push(Token { kind: TokenKind::Dot, line, col });
+                chars.next();
+                col += 1;
+            }
+            '"' => {
+                let start_col = col;
+                chars.next();
+                col += 1;
+                let mut string = String::new();
+                loop {
+                    match chars.next() {
+                        Some('"') => {
+                            col += 1;
+                            break;
+                        }
+                        Some('\\') => {
+                            col += 1;
+                            match chars.next() {
+                                Some('n') => { string.push('\n'); col += 1; }
+                                Some('t') => { string.push('\t'); col += 1; }
+                                Some('\\') => { string.push('\\'); col += 1; }
+                                Some('"') => { string.push('"'); col += 1; }
+                                Some('0') => { string.push('\0'); col += 1; }
+                                Some(c) => {
+                                    return Err(CompileError {
+                                        message: format!("unknown escape sequence: \\{c}"),
+                                        line,
+                                        col: col - 1,
+                                    });
+                                }
+                                None => {
+                                    return Err(CompileError {
+                                        message: "unterminated string literal".to_string(),
+                                        line,
+                                        col: start_col,
+                                    });
+                                }
+                            }
+                        }
+                        Some('\n') | None => {
+                            return Err(CompileError {
+                                message: "unterminated string literal".to_string(),
+                                line,
+                                col: start_col,
+                            });
+                        }
+                        Some(c) => {
+                            string.push(c);
+                            col += 1;
+                        }
+                    }
+                }
+                tokens.push(Token { kind: TokenKind::StringLiteral(string), line, col: start_col });
+            }
             '0'..='9' => {
                 let start_col = col;
                 let mut num_str = String::new();
@@ -238,12 +321,15 @@ pub fn tokenize(source: &str) -> Result<Vec<Token>, CompileError> {
                 }
                 let kind = match ident.as_str() {
                     "int" => TokenKind::Int,
+                    "char" => TokenKind::Char,
                     "return" => TokenKind::Return,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
                     "while" => TokenKind::While,
                     "do" => TokenKind::Do,
                     "for" => TokenKind::For,
+                    "struct" => TokenKind::Struct,
+                    "union" => TokenKind::Union,
                     _ => TokenKind::Identifier(ident),
                 };
                 tokens.push(Token { kind, line, col: start_col });
@@ -382,10 +468,159 @@ mod tests {
     }
 
     #[test]
+    fn tokenize_address_of() {
+        let tokens = tokenize("&x").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(kinds, vec![&TokenKind::Ampersand, &TokenKind::Identifier("x".to_string())]);
+    }
+
+    #[test]
+    fn tokenize_ampersand_vs_ampamp() {
+        let tokens = tokenize("&x && y").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Ampersand,
+                &TokenKind::Identifier("x".to_string()),
+                &TokenKind::AmpAmp,
+                &TokenKind::Identifier("y".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_brackets() {
+        let tokens = tokenize("arr[0]").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Identifier("arr".to_string()),
+                &TokenKind::OpenBracket,
+                &TokenKind::IntLiteral(0),
+                &TokenKind::CloseBracket,
+            ]
+        );
+    }
+
+    #[test]
     fn tokenize_rejects_invalid_char() {
         let err = tokenize("@").unwrap_err();
         assert_eq!(err.line, 1);
         assert_eq!(err.col, 1);
         assert!(err.message.contains("unexpected character"));
+    }
+
+    #[test]
+    fn tokenize_string_literal() {
+        let tokens = tokenize("\"hello\"").unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral("hello".to_string()));
+    }
+
+    #[test]
+    fn tokenize_string_escape_sequences() {
+        let tokens = tokenize("\"a\\nb\\tc\\\\d\\\"e\\0f\"").unwrap();
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::StringLiteral("a\nb\tc\\d\"e\0f".to_string())
+        );
+    }
+
+    #[test]
+    fn tokenize_empty_string() {
+        let tokens = tokenize("\"\"").unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral(String::new()));
+    }
+
+    #[test]
+    fn tokenize_unterminated_string() {
+        let err = tokenize("\"hello").unwrap_err();
+        assert!(err.message.contains("unterminated"));
+    }
+
+    #[test]
+    fn tokenize_struct_keyword() {
+        let tokens = tokenize("struct Point").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Struct,
+                &TokenKind::Identifier("Point".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_union_keyword() {
+        let tokens = tokenize("union Data").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Union,
+                &TokenKind::Identifier("Data".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_dot_operator() {
+        let tokens = tokenize("p.x").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Identifier("p".to_string()),
+                &TokenKind::Dot,
+                &TokenKind::Identifier("x".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_arrow_operator() {
+        let tokens = tokenize("p->x").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Identifier("p".to_string()),
+                &TokenKind::Arrow,
+                &TokenKind::Identifier("x".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_minus_vs_arrow() {
+        let tokens = tokenize("a - b->c").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Identifier("a".to_string()),
+                &TokenKind::Minus,
+                &TokenKind::Identifier("b".to_string()),
+                &TokenKind::Arrow,
+                &TokenKind::Identifier("c".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_char_keyword() {
+        let tokens = tokenize("char *s").unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|t| &t.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &TokenKind::Char,
+                &TokenKind::Star,
+                &TokenKind::Identifier("s".to_string()),
+            ]
+        );
     }
 }
