@@ -3,6 +3,8 @@ pub mod lexer;
 pub mod parser;
 pub mod codegen;
 
+pub use codegen::Target;
+
 use std::fmt;
 
 #[derive(Debug)]
@@ -21,9 +23,13 @@ impl fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 pub fn compile(source: &str) -> Result<String, CompileError> {
+    compile_for_target(source, Target::Linux)
+}
+
+pub fn compile_for_target(source: &str, target: Target) -> Result<String, CompileError> {
     let preprocessed = preprocessor::preprocess(source)?;
     let tokens = lexer::tokenize(&preprocessed)?;
     let ast = parser::parse(&tokens)?;
-    let asm = codegen::generate(&ast)?;
+    let asm = codegen::generate(&ast, target)?;
     Ok(asm)
 }

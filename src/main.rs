@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::process;
 
+use agi_cc::Target;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
@@ -17,7 +19,13 @@ fn main() {
         }
     };
 
-    match agi_cc::compile(&source) {
+    let target = if cfg!(target_os = "macos") {
+        Target::MacOS
+    } else {
+        Target::Linux
+    };
+
+    match agi_cc::compile_for_target(&source, target) {
         Ok(asm) => print!("{asm}"),
         Err(e) => {
             eprintln!("{e}");

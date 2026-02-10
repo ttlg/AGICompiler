@@ -6,6 +6,12 @@ use crate::parser::{
     Statement, TypeDef, UnaryOperator,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Target {
+    Linux,
+    MacOS,
+}
+
 const ARG_REGISTERS_64: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 const ARG_REGISTERS_32: [&str; 6] = ["%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"];
 
@@ -108,12 +114,20 @@ struct Context<'a> {
     globals: &'a HashMap<String, VarType>,
     string_literals: &'a mut Vec<String>,
     type_registry: &'a HashMap<String, CompositeLayout>,
+    target: Target,
     stack_offset: i64,
     label_counter: usize,
     stack_depth: usize,
 }
 
 impl<'a> Context<'a> {
+    fn sym(&self, name: &str) -> String {
+        match self.target {
+            Target::MacOS => format!("_{name}"),
+            Target::Linux => name.to_string(),
+        }
+    }
+
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
     }
@@ -250,7 +264,7 @@ fn find_member(
     Ok((info.offset, info.member_type.clone()))
 }
 
-fn generate_var_read(loc: &VarLocation) -> (Vec<String>, ExprType) {
+fn generate_var_read(loc: &VarLocation, target: Target) -> (Vec<String>, ExprType) {
     match loc {
         VarLocation::Local { offset, var_type } => match var_type {
             VarType::Int => (vec![format!("    movl -{offset}(%rbp), %eax")], ExprType::Int),
@@ -269,23 +283,29 @@ fn generate_var_read(loc: &VarLocation) -> (Vec<String>, ExprType) {
                 (vec![format!("    movq -{offset}(%rbp), %rax")], ExprType::UnionPtr(name.clone()))
             }
         },
-        VarLocation::Global { name, var_type } => match var_type {
-            VarType::Int => (vec![format!("    movl {name}(%rip), %eax")], ExprType::Int),
-            VarType::Pointer => (vec![format!("    movq {name}(%rip), %rax")], ExprType::Pointer),
-            VarType::Array(_) => (vec![format!("    leaq {name}(%rip), %rax")], ExprType::Pointer),
-            VarType::Struct(type_name) => {
-                (vec![format!("    leaq {name}(%rip), %rax")], ExprType::StructPtr(type_name.clone()))
+        VarLocation::Global { name, var_type } => {
+            let sym = match target {
+                Target::MacOS => format!("_{name}"),
+                Target::Linux => name.clone(),
+            };
+            match var_type {
+                VarType::Int => (vec![format!("    movl {sym}(%rip), %eax")], ExprType::Int),
+                VarType::Pointer => (vec![format!("    movq {sym}(%rip), %rax")], ExprType::Pointer),
+                VarType::Array(_) => (vec![format!("    leaq {sym}(%rip), %rax")], ExprType::Pointer),
+                VarType::Struct(type_name) => {
+                    (vec![format!("    leaq {sym}(%rip), %rax")], ExprType::StructPtr(type_name.clone()))
+                }
+                VarType::Union(type_name) => {
+                    (vec![format!("    leaq {sym}(%rip), %rax")], ExprType::UnionPtr(type_name.clone()))
+                }
+                VarType::StructPointer(type_name) => {
+                    (vec![format!("    movq {sym}(%rip), %rax")], ExprType::StructPtr(type_name.clone()))
+                }
+                VarType::UnionPointer(type_name) => {
+                    (vec![format!("    movq {sym}(%rip), %rax")], ExprType::UnionPtr(type_name.clone()))
+                }
             }
-            VarType::Union(type_name) => {
-                (vec![format!("    leaq {name}(%rip), %rax")], ExprType::UnionPtr(type_name.clone()))
-            }
-            VarType::StructPointer(type_name) => {
-                (vec![format!("    movq {name}(%rip), %rax")], ExprType::StructPtr(type_name.clone()))
-            }
-            VarType::UnionPointer(type_name) => {
-                (vec![format!("    movq {name}(%rip), %rax")], ExprType::UnionPtr(type_name.clone()))
-            }
-        },
+        }
     }
 }
 
@@ -363,7 +383,7 @@ fn generate_expression(
         }
         Expression::Variable(name) => {
             let loc = ctx.lookup(name)?;
-            Ok(generate_var_read(&loc))
+            Ok(generate_var_read(&loc, ctx.target))
         }
         Expression::Assignment { target, value } => {
             match target.as_ref() {
@@ -396,31 +416,34 @@ fn generate_expression(
                                 })
                             }
                         },
-                        VarLocation::Global { name: gname, var_type } => match var_type {
-                            VarType::Int => {
-                                instructions.push(format!("    movl %eax, {gname}(%rip)"));
-                                Ok((instructions, ExprType::Int))
+                        VarLocation::Global { name: gname, var_type } => {
+                            let sym = ctx.sym(&gname);
+                            match var_type {
+                                VarType::Int => {
+                                    instructions.push(format!("    movl %eax, {sym}(%rip)"));
+                                    Ok((instructions, ExprType::Int))
+                                }
+                                VarType::Pointer => {
+                                    instructions.push(format!("    movq %rax, {sym}(%rip)"));
+                                    Ok((instructions, ExprType::Pointer))
+                                }
+                                VarType::StructPointer(type_name) => {
+                                    instructions.push(format!("    movq %rax, {sym}(%rip)"));
+                                    Ok((instructions, ExprType::StructPtr(type_name)))
+                                }
+                                VarType::UnionPointer(type_name) => {
+                                    instructions.push(format!("    movq %rax, {sym}(%rip)"));
+                                    Ok((instructions, ExprType::UnionPtr(type_name)))
+                                }
+                                VarType::Array(_) | VarType::Struct(_) | VarType::Union(_) => {
+                                    Err(CompileError {
+                                        message: "cannot assign to this type".to_string(),
+                                        line: 0,
+                                        col: 0,
+                                    })
+                                }
                             }
-                            VarType::Pointer => {
-                                instructions.push(format!("    movq %rax, {gname}(%rip)"));
-                                Ok((instructions, ExprType::Pointer))
-                            }
-                            VarType::StructPointer(type_name) => {
-                                instructions.push(format!("    movq %rax, {gname}(%rip)"));
-                                Ok((instructions, ExprType::StructPtr(type_name)))
-                            }
-                            VarType::UnionPointer(type_name) => {
-                                instructions.push(format!("    movq %rax, {gname}(%rip)"));
-                                Ok((instructions, ExprType::UnionPtr(type_name)))
-                            }
-                            VarType::Array(_) | VarType::Struct(_) | VarType::Union(_) => {
-                                Err(CompileError {
-                                    message: "cannot assign to this type".to_string(),
-                                    line: 0,
-                                    col: 0,
-                                })
-                            }
-                        },
+                        }
                     }
                 }
                 Expression::Dereference { operand } => {
@@ -477,8 +500,9 @@ fn generate_expression(
                         VarLocation::Local { offset, .. } => {
                             Ok((vec![format!("    leaq -{offset}(%rbp), %rax")], ExprType::Pointer))
                         }
-                        VarLocation::Global { name, .. } => {
-                            Ok((vec![format!("    leaq {name}(%rip), %rax")], ExprType::Pointer))
+                        VarLocation::Global { name: gname, .. } => {
+                            let sym = ctx.sym(&gname);
+                            Ok((vec![format!("    leaq {sym}(%rip), %rax")], ExprType::Pointer))
                         }
                     }
                 }
@@ -715,7 +739,7 @@ fn generate_expression(
             if needs_align {
                 instructions.push("    subq $8, %rsp".to_string());
             }
-            instructions.push(format!("    call {name}"));
+            instructions.push(format!("    call {}", ctx.sym(name)));
             if needs_align {
                 instructions.push("    addq $8, %rsp".to_string());
             }
@@ -900,6 +924,7 @@ fn generate_function(
     globals: &HashMap<String, VarType>,
     string_literals: &mut Vec<String>,
     type_registry: &HashMap<String, CompositeLayout>,
+    target: Target,
 ) -> Result<(Vec<String>, usize), CompileError> {
     let body_bytes = count_stack_bytes(&function.body, type_registry);
     let param_bytes: usize = function
@@ -915,14 +940,16 @@ fn generate_function(
         globals,
         string_literals,
         type_registry,
+        target,
         stack_offset: 0,
         label_counter,
         stack_depth: 0,
     };
 
+    let sym = ctx.sym(&function.name);
     let mut lines = vec![
-        format!("    .globl {}", function.name),
-        format!("{}:", function.name),
+        format!("    .globl {sym}"),
+        format!("{sym}:"),
         "    pushq %rbp".to_string(),
         "    movq %rsp, %rbp".to_string(),
     ];
@@ -958,9 +985,17 @@ fn generate_globals(
     globals_map: &mut HashMap<String, VarType>,
     string_literals: &mut Vec<String>,
     type_registry: &HashMap<String, CompositeLayout>,
+    target: Target,
 ) -> (Vec<String>, Vec<String>) {
     let mut data_lines = Vec::new();
     let mut bss_lines = Vec::new();
+
+    let sym = |name: &str| -> String {
+        match target {
+            Target::MacOS => format!("_{name}"),
+            Target::Linux => name.to_string(),
+        }
+    };
 
     for global in globals {
         let var_type = decl_type_to_var_type(&global.decl_type);
@@ -968,8 +1003,9 @@ fn generate_globals(
 
         match &global.initializer {
             Some(init) => {
-                data_lines.push(format!("    .globl {}", global.name));
-                data_lines.push(format!("{}:", global.name));
+                let s = sym(&global.name);
+                data_lines.push(format!("    .globl {s}"));
+                data_lines.push(format!("{s}:"));
                 match init {
                     GlobalInit::Integer(n) => match &global.decl_type {
                         DeclType::Int => data_lines.push(format!("    .long {n}")),
@@ -996,7 +1032,8 @@ fn generate_globals(
                     }
                     _ => 4,
                 };
-                bss_lines.push(format!("    .comm {},{},{}", global.name, size, align));
+                let s = sym(&global.name);
+                bss_lines.push(format!("    .comm {s},{size},{align}"));
             }
         }
     }
@@ -1004,7 +1041,7 @@ fn generate_globals(
     (data_lines, bss_lines)
 }
 
-pub fn generate(program: &Program) -> Result<String, CompileError> {
+pub fn generate(program: &Program, target: Target) -> Result<String, CompileError> {
     let mut all_lines = Vec::new();
     let mut label_counter = 0;
     let mut string_literals: Vec<String> = Vec::new();
@@ -1020,6 +1057,7 @@ pub fn generate(program: &Program) -> Result<String, CompileError> {
         &mut globals_map,
         &mut string_literals,
         &type_registry,
+        target,
     );
 
     let mut function_lines = Vec::new();
@@ -1030,6 +1068,7 @@ pub fn generate(program: &Program) -> Result<String, CompileError> {
             &globals_map,
             &mut string_literals,
             &type_registry,
+            target,
         )?;
         function_lines.extend(lines);
         label_counter = new_counter;
@@ -1046,7 +1085,11 @@ pub fn generate(program: &Program) -> Result<String, CompileError> {
     all_lines.extend(bss_lines);
 
     if !string_literals.is_empty() {
-        all_lines.push("    .section .rodata".to_string());
+        let rodata = match target {
+            Target::MacOS => "    .section __TEXT,__const",
+            Target::Linux => "    .section .rodata",
+        };
+        all_lines.push(rodata.to_string());
         for (i, s) in string_literals.iter().enumerate() {
             all_lines.push(format!(".LC{i}:"));
             all_lines.push(format!("    .string \"{}\"", escape_for_asm(s)));
@@ -1071,13 +1114,13 @@ mod tests {
     fn compile(source: &str) -> String {
         let tokens = tokenize(source).unwrap();
         let ast = parse(&tokens).unwrap();
-        generate(&ast).unwrap()
+        generate(&ast, Target::Linux).unwrap()
     }
 
     fn compile_err(source: &str) -> CompileError {
         let tokens = tokenize(source).unwrap();
         let ast = parse(&tokens).unwrap();
-        generate(&ast).unwrap_err()
+        generate(&ast, Target::Linux).unwrap_err()
     }
 
     #[test]

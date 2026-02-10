@@ -1,4 +1,4 @@
-use agi_cc::compile;
+use agi_cc::{compile, compile_for_target, Target};
 
 #[test]
 fn return_0() {
@@ -1310,4 +1310,135 @@ fn preprocess_conditional_excludes_function() {
     )).unwrap();
     assert!(asm.contains("movl $1, %eax"));
     assert!(asm.contains("call compute"));
+}
+
+#[test]
+fn macos_function_symbols() {
+    let asm = compile_for_target("int main() { return 42; }", Target::MacOS).unwrap();
+    assert!(asm.contains("    .globl _main"));
+    assert!(asm.contains("_main:"));
+    assert!(!asm.contains("    .globl main\n"));
+}
+
+#[test]
+fn macos_function_call() {
+    let asm = compile_for_target(
+        "int foo() { return 1; } int main() { return foo(); }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains("    .globl _foo"));
+    assert!(asm.contains("_foo:"));
+    assert!(asm.contains("call _foo"));
+    assert!(asm.contains("    .globl _main"));
+    assert!(asm.contains("_main:"));
+}
+
+#[test]
+fn macos_full_asm_format() {
+    let asm = compile_for_target("int main() { return 7; }", Target::MacOS).unwrap();
+    let expected = concat!(
+        "    .globl _main\n",
+        "_main:\n",
+        "    pushq %rbp\n",
+        "    movq %rsp, %rbp\n",
+        "    movl $7, %eax\n",
+        "    movq %rbp, %rsp\n",
+        "    popq %rbp\n",
+        "    ret\n",
+    );
+    assert_eq!(asm, expected);
+}
+
+#[test]
+fn macos_rodata_section() {
+    let asm = compile_for_target(
+        "int main() { char *s = \"hello\"; return 0; }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains("    .section __TEXT,__const"));
+    assert!(!asm.contains(".section .rodata"));
+}
+
+#[test]
+fn macos_global_initialized() {
+    let asm = compile_for_target("int x = 42; int main() { return x; }", Target::MacOS).unwrap();
+    assert!(asm.contains("    .globl _x"));
+    assert!(asm.contains("_x:"));
+    assert!(asm.contains("movl _x(%rip), %eax"));
+}
+
+#[test]
+fn macos_global_uninitialized() {
+    let asm = compile_for_target("int x; int main() { x = 10; return x; }", Target::MacOS).unwrap();
+    assert!(asm.contains(".comm _x,4,4"));
+    assert!(asm.contains("movl %eax, _x(%rip)"));
+    assert!(asm.contains("movl _x(%rip), %eax"));
+}
+
+#[test]
+fn macos_global_pointer() {
+    let asm = compile_for_target(
+        "int *p; int main() { int x = 5; p = &x; return *p; }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains(".comm _p,8,8"));
+    assert!(asm.contains("movq %rax, _p(%rip)"));
+}
+
+#[test]
+fn macos_global_array() {
+    let asm = compile_for_target(
+        "int arr[3]; int main() { arr[0] = 42; return arr[0]; }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains(".comm _arr,12,4"));
+    assert!(asm.contains("leaq _arr(%rip), %rax"));
+}
+
+#[test]
+fn macos_address_of_global() {
+    let asm = compile_for_target(
+        "int g = 5; int main() { int *p = &g; return *p; }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains("leaq _g(%rip), %rax"));
+}
+
+#[test]
+fn macos_global_string_init() {
+    let asm = compile_for_target(
+        "char *msg = \"world\"; int main() { return 0; }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains("    .globl _msg"));
+    assert!(asm.contains("_msg:"));
+    assert!(asm.contains("    .section __TEXT,__const"));
+}
+
+#[test]
+fn macos_local_labels_no_prefix() {
+    let asm = compile_for_target(
+        "int main() { char *s = \"hi\"; if (1) return 1; return 0; }",
+        Target::MacOS,
+    ).unwrap();
+    assert!(asm.contains(".LC0:"));
+    assert!(asm.contains(".L0:") || asm.contains(".L1:"));
+}
+
+#[test]
+fn macos_global_struct() {
+    let asm = compile_for_target(concat!(
+        "struct Point { int x; int y; }; ",
+        "struct Point g; ",
+        "int main() { g.x = 5; return g.x; }",
+    ), Target::MacOS).unwrap();
+    assert!(asm.contains(".comm _g,8,4"));
+    assert!(asm.contains("leaq _g(%rip), %rax"));
+}
+
+#[test]
+fn linux_target_unchanged() {
+    let asm_default = compile("int x = 1; int main() { return x; }").unwrap();
+    let asm_linux = compile_for_target("int x = 1; int main() { return x; }", Target::Linux).unwrap();
+    assert_eq!(asm_default, asm_linux);
 }
